@@ -6,8 +6,32 @@ use Mix.Config
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we use it
 # with webpack to recompile .js and .css sources.
+
+port =
+  case System.get_env("PORT") && Integer.parse(System.get_env("PORT")) do
+    {port, _} -> port
+    :error -> nil
+    nil -> nil
+  end
+
 config :block_scout_web, BlockScoutWeb.Endpoint,
-  http: [port: 4000],
+  secret_key_base:
+    System.get_env("SECRET_KEY_BASE") || "RMgI4C1HSkxsEjdhtGMfwAHfyT6CKWXOgzCboJflfSm4jeAlic52io05KB6mqzc5",
+  http: [
+    port: port || 4000
+  ],
+  url: [
+    scheme: "http",
+    host: System.get_env("BLOCKSCOUT_HOST") || "localhost",
+    path: System.get_env("NETWORK_PATH") || "/",
+    api_path: System.get_env("API_PATH") || "/"
+  ],
+  https: [
+    port: (port && port + 1) || 4001,
+    cipher_suite: :strong,
+    certfile: System.get_env("CERTFILE") || "priv/cert/selfsigned.pem",
+    keyfile: System.get_env("KEYFILE") || "priv/cert/selfsigned_key.pem"
+  ],
   debug_errors: true,
   code_reloader: true,
   check_origin: false,
@@ -57,5 +81,3 @@ config :logger, :block_scout_web,
 # Set a higher stacktrace during development. Avoid configuring such
 # in production as building large stacktraces may be expensive.
 config :phoenix, :stacktrace_depth, 20
-
-import_config "dev.secret.exs"

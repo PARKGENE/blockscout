@@ -6,22 +6,61 @@ defmodule Explorer.Application do
   use Application
 
   alias Explorer.Admin
+
+  alias Explorer.Chain.Cache.{
+    Accounts,
+    AddressSum,
+    AddressSumMinusBurnt,
+    BlockCount,
+    BlockNumber,
+    Blocks,
+    GasUsage,
+    NetVersion,
+    TransactionCount,
+    Transactions,
+    Uncles
+  }
+
+  alias Explorer.Chain.Supply.RSK
+
+  alias Explorer.Market.MarketHistoryCache
   alias Explorer.Repo.PrometheusLogger
 
   @impl Application
   def start(_type, _args) do
     PrometheusLogger.setup()
 
-    Telemetry.attach("prometheus-ecto", [:explorer, :repo, :query], Explorer.Repo.PrometheusLogger, :handle_event, %{})
+    :telemetry.attach(
+      "prometheus-ecto",
+      [:explorer, :repo, :query],
+      &PrometheusLogger.handle_event/4,
+      %{}
+    )
 
     # Children to start in all environments
     base_children = [
       Explorer.Repo,
-      Supervisor.Spec.worker(SpandexDatadog.ApiServer, [datadog_opts()]),
+      Supervisor.child_spec({SpandexDatadog.ApiServer, datadog_opts()}, id: SpandexDatadog.ApiServer),
+      Supervisor.child_spec({Task.Supervisor, name: Explorer.HistoryTaskSupervisor}, id: Explorer.HistoryTaskSupervisor),
       Supervisor.child_spec({Task.Supervisor, name: Explorer.MarketTaskSupervisor}, id: Explorer.MarketTaskSupervisor),
+      Supervisor.child_spec({Task.Supervisor, name: Explorer.GenesisDataTaskSupervisor}, id: GenesisDataTaskSupervisor),
       Supervisor.child_spec({Task.Supervisor, name: Explorer.TaskSupervisor}, id: Explorer.TaskSupervisor),
+      Explorer.SmartContract.SolcDownloader,
       {Registry, keys: :duplicate, name: Registry.ChainEvents, id: Registry.ChainEvents},
-      {Admin.Recovery, [[], [name: Admin.Recovery]]}
+      {Admin.Recovery, [[], [name: Admin.Recovery]]},
+      TransactionCount,
+      AddressSum,
+      AddressSumMinusBurnt,
+      BlockCount,
+      Blocks,
+      GasUsage,
+      NetVersion,
+      BlockNumber,
+      con_cache_child_spec(MarketHistoryCache.cache_name()),
+      con_cache_child_spec(RSK.cache_name(), ttl_check_interval: :timer.minutes(1), global_ttl: :timer.minutes(30)),
+      Transactions,
+      Accounts,
+      Uncles
     ]
 
     children = base_children ++ configurable_children()
@@ -34,19 +73,29 @@ defmodule Explorer.Application do
   defp configurable_children do
     [
       configure(Explorer.ExchangeRates),
+      configure(Explorer.ChainSpec.GenesisData),
       configure(Explorer.KnownTokens),
       configure(Explorer.Market.History.Cataloger),
+      configure(Explorer.Chain.Cache.TokenExchangeRate),
+      configure(Explorer.Chain.Transaction.History.Historian),
+      configure(Explorer.Chain.Events.Listener),
       configure(Explorer.Counters.AddressesWithBalanceCounter),
+      configure(Explorer.Counters.AddressesCounter),
+      configure(Explorer.Counters.AddressTransactionsCounter),
+      configure(Explorer.Counters.AddressTransactionsGasUsageCounter),
+      configure(Explorer.Counters.AddressTokenUsdSum),
+      configure(Explorer.Counters.TokenHoldersCounter),
+      configure(Explorer.Counters.TokenTransfersCounter),
       configure(Explorer.Counters.AverageBlockTime),
-      configure(Explorer.Validator.MetadataProcessor)
+      configure(Explorer.Counters.Bridge),
+      configure(Explorer.Validator.MetadataProcessor),
+      configure(Explorer.Staking.ContractState)
     ]
     |> List.flatten()
   end
 
   defp should_start?(process) do
-    :explorer
-    |> Application.fetch_env!(process)
-    |> Keyword.fetch!(:enabled)
+    Application.get_env(:explorer, process, [])[:enabled] == true
   end
 
   defp configure(process) do
@@ -65,5 +114,17 @@ defmodule Explorer.Application do
       sync_threshold: System.get_env("SPANDEX_SYNC_THRESHOLD") || 100,
       http: HTTPoison
     ]
+  end
+
+  defp con_cache_child_spec(name, params \\ [ttl_check_interval: false]) do
+    params = Keyword.put(params, :name, name)
+
+    Supervisor.child_spec(
+      {
+        ConCache,
+        params
+      },
+      id: {ConCache, name}
+    )
   end
 end

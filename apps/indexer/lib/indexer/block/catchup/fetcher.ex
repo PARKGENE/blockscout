@@ -8,12 +8,23 @@ defmodule Indexer.Block.Catchup.Fetcher do
   require Logger
 
   import Indexer.Block.Fetcher,
-    only: [async_import_coin_balances: 2, async_import_tokens: 1, async_import_uncles: 1, fetch_and_import_range: 2]
+    only: [
+      async_import_block_rewards: 1,
+      async_import_coin_balances: 2,
+      async_import_created_contract_codes: 1,
+      async_import_internal_transactions: 1,
+      async_import_replaced_transactions: 1,
+      async_import_tokens: 1,
+      async_import_token_balances: 1,
+      async_import_token_instances: 1,
+      async_import_uncles: 1,
+      fetch_and_import_range: 2
+    ]
 
   alias Ecto.Changeset
   alias Explorer.Chain
-  alias Explorer.Chain.Transaction
-  alias Indexer.{Block, InternalTransaction, Sequence, TokenBalance, Tracer}
+  alias Indexer.{Block, Tracer}
+  alias Indexer.Block.Catchup.Sequence
   alias Indexer.Memory.Shrinkable
 
   @behaviour Block.Fetcher
@@ -62,21 +73,29 @@ defmodule Indexer.Block.Catchup.Fetcher do
       ) do
     Logger.metadata(fetcher: :block_catchup)
 
-    {:ok, latest_block_number} = EthereumJSONRPC.fetch_block_number_by_tag("latest", json_rpc_named_arguments)
+    {:ok, latest_block_number} =
+      case latest_block() do
+        nil ->
+          EthereumJSONRPC.fetch_block_number_by_tag("latest", json_rpc_named_arguments)
+
+        number ->
+          {:ok, number}
+      end
 
     case latest_block_number do
       # let realtime indexer get the genesis block
       0 ->
-        %{first_block_number: 0, missing_block_count: 0, shrunk: false}
+        %{first_block_number: 0, missing_block_count: 0, last_block_number: 0, shrunk: false}
 
       _ ->
         # realtime indexer gets the current latest block
         first = latest_block_number - 1
-        last = 0
+        last = last_block()
 
         Logger.metadata(first_block_number: first, last_block_number: last)
 
         missing_ranges = Chain.missing_block_number_ranges(first..last)
+
         range_count = Enum.count(missing_ranges)
 
         missing_block_count =
@@ -105,56 +124,47 @@ defmodule Indexer.Block.Catchup.Fetcher do
               Shrinkable.shrunk?(sequence)
           end
 
-        %{first_block_number: first, missing_block_count: missing_block_count, shrunk: shrunk}
+        %{first_block_number: first, last_block_number: last, missing_block_count: missing_block_count, shrunk: shrunk}
     end
   end
 
   @async_import_remaining_block_data_options ~w(address_hash_to_fetched_balance_block_number)a
 
   @impl Block.Fetcher
-  def import(_, options) when is_map(options) do
-    {async_import_remaining_block_data_options, chain_import_options} =
+  def import(_block_fetcher, options) when is_map(options) do
+    {async_import_remaining_block_data_options, options_with_block_rewards_errors} =
       Map.split(options, @async_import_remaining_block_data_options)
 
-    full_chain_import_options = put_in(chain_import_options, [:blocks, :params, Access.all(), :consensus], true)
+    {block_reward_errors, options_without_block_rewards_errors} =
+      pop_in(options_with_block_rewards_errors[:block_rewards][:errors])
+
+    full_chain_import_options =
+      put_in(options_without_block_rewards_errors, [:blocks, :params, Access.all(), :consensus], true)
 
     with {:import, {:ok, imported} = ok} <- {:import, Chain.import(full_chain_import_options)} do
       async_import_remaining_block_data(
         imported,
-        async_import_remaining_block_data_options
+        Map.put(async_import_remaining_block_data_options, :block_rewards, %{errors: block_reward_errors})
       )
 
       ok
     end
   end
 
-  defp async_import_remaining_block_data(imported, options) do
+  defp async_import_remaining_block_data(
+         imported,
+         %{block_rewards: %{errors: block_reward_errors}} = options
+       ) do
+    async_import_block_rewards(block_reward_errors)
     async_import_coin_balances(imported, options)
+    async_import_created_contract_codes(imported)
     async_import_internal_transactions(imported)
     async_import_tokens(imported)
     async_import_token_balances(imported)
     async_import_uncles(imported)
+    async_import_replaced_transactions(imported)
+    async_import_token_instances(imported)
   end
-
-  defp async_import_internal_transactions(%{transactions: transactions}) do
-    transactions
-    |> Enum.flat_map(fn
-      %Transaction{block_number: block_number, index: index, hash: hash, internal_transactions_indexed_at: nil} ->
-        [%{block_number: block_number, index: index, hash: hash}]
-
-      %Transaction{internal_transactions_indexed_at: %DateTime{}} ->
-        []
-    end)
-    |> InternalTransaction.Fetcher.async_fetch(10_000)
-  end
-
-  defp async_import_internal_transactions(_), do: :ok
-
-  defp async_import_token_balances(%{address_token_balances: token_balances}) do
-    TokenBalance.Fetcher.async_fetch(token_balances)
-  end
-
-  defp async_import_token_balances(_), do: :ok
 
   defp stream_fetch_and_import(%__MODULE__{blocks_concurrency: blocks_concurrency} = state, sequence)
        when is_pid(sequence) do
@@ -262,19 +272,19 @@ defmodule Indexer.Block.Catchup.Fetcher do
     end
   end
 
-  defp retry(sequence, errors) when is_list(errors) do
-    errors
-    |> errors_to_ranges()
+  defp retry(sequence, block_errors) when is_list(block_errors) do
+    block_errors
+    |> block_errors_to_block_number_ranges()
     |> Enum.map(&push_back(sequence, &1))
   end
 
-  defp errors_to_ranges(errors) when is_list(errors) do
-    errors
-    |> Enum.flat_map(&error_to_numbers/1)
+  defp block_errors_to_block_number_ranges(block_errors) when is_list(block_errors) do
+    block_errors
+    |> Enum.map(&block_error_to_number/1)
     |> numbers_to_ranges()
   end
 
-  defp error_to_numbers(%{data: %{number: number}}) when is_integer(number), do: [number]
+  defp block_error_to_number(%{data: %{number: number}}) when is_integer(number), do: number
 
   defp numbers_to_ranges([]), do: []
 
@@ -312,13 +322,35 @@ defmodule Indexer.Block.Catchup.Fetcher do
   def push_front(block_numbers) do
     if Process.whereis(@sequence_name) do
       Enum.reduce_while(block_numbers, :ok, fn block_number, :ok ->
-        case Sequence.push_front(@sequence_name, block_number..block_number) do
-          :ok -> {:cont, :ok}
-          {:error, _} = error -> {:halt, error}
+        if is_integer(block_number) do
+          case Sequence.push_front(@sequence_name, block_number..block_number) do
+            :ok -> {:cont, :ok}
+            {:error, _} = error -> {:halt, error}
+          end
+        else
+          Logger.warn(fn -> ["Received a non-integer block number: ", inspect(block_number)] end)
         end
       end)
     else
       {:error, :queue_unavailable}
+    end
+  end
+
+  defp last_block do
+    string_value = Application.get_env(:indexer, :first_block)
+
+    case Integer.parse(string_value) do
+      {integer, ""} -> integer
+      _ -> 0
+    end
+  end
+
+  defp latest_block do
+    string_value = Application.get_env(:indexer, :last_block)
+
+    case Integer.parse(string_value) do
+      {integer, ""} -> integer
+      _ -> nil
     end
   end
 end

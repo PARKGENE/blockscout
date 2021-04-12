@@ -7,9 +7,12 @@ defmodule BlockScoutWeb.ViewingChainTest do
 
   alias BlockScoutWeb.{AddressPage, BlockPage, ChainPage, TransactionPage}
   alias Explorer.Chain.Block
-  alias Explorer.Counters.AddressesWithBalanceCounter
+  alias Explorer.Counters.AddressesCounter
 
   setup do
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+
     Enum.map(401..404, &insert(:block, number: &1))
 
     block = insert(:block, number: 405)
@@ -32,8 +35,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
     test "search for address", %{session: session} do
       address = insert(:address)
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -46,8 +49,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
     test "search for blocks from chain page", %{session: session} do
       block = insert(:block, number: 6)
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -56,8 +59,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
     end
 
     test "blocks list", %{session: session} do
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -67,8 +70,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
     test "inserts place holder blocks on render for out of order blocks", %{session: session} do
       insert(:block, number: 409)
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -79,10 +82,14 @@ defmodule BlockScoutWeb.ViewingChainTest do
 
   describe "viewing transactions" do
     test "search for transactions", %{session: session} do
-      transaction = insert(:transaction)
+      block = insert(:block)
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      transaction =
+        insert(:transaction)
+        |> with_block(block)
+
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -91,8 +98,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
     end
 
     test "transactions list", %{session: session} do
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -108,8 +115,8 @@ defmodule BlockScoutWeb.ViewingChainTest do
         |> with_contract_creation(contract_address)
         |> with_block(block)
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -135,11 +142,15 @@ defmodule BlockScoutWeb.ViewingChainTest do
         token_contract_address: contract_token_address
       )
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
+      ChainPage.visit_page(session)
+
+      # wait for the `transactions-list` to load
+      :timer.sleep(1000)
 
       session
-      |> ChainPage.visit_page()
       |> assert_has(ChainPage.token_transfers(transaction, count: 1))
       |> click(ChainPage.token_transfers_expansion(transaction))
       |> assert_has(ChainPage.token_transfers(transaction, count: 3))

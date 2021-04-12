@@ -40,6 +40,9 @@ defmodule Explorer.Chain.Address.CurrentTokenBalance do
     field(:block_number, :integer)
     field(:value_fetched_at, :utc_datetime_usec)
 
+    # A transient field for deriving token holder count deltas during address_current_token_balances upserts
+    field(:old_value, :decimal)
+
     belongs_to(:address, Address, foreign_key: :address_hash, references: :hash, type: Hash.Address)
 
     belongs_to(
@@ -100,6 +103,18 @@ defmodule Explorer.Chain.Address.CurrentTokenBalance do
       where: tb.address_hash == ^address_hash,
       where: tb.value > 0,
       preload: :token
+    )
+  end
+
+  @doc """
+  Builds an `t:Ecto.Query.t/0` to fetch the current balance of the given address for the given token.
+  """
+  def last_token_balance(address_hash, token_contract_address_hash) do
+    from(
+      tb in __MODULE__,
+      where: tb.token_contract_address_hash == ^token_contract_address_hash,
+      where: tb.address_hash == ^address_hash,
+      select: tb.value
     )
   end
 

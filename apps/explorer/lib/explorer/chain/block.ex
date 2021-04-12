@@ -7,11 +7,12 @@ defmodule Explorer.Chain.Block do
 
   use Explorer.Schema
 
-  alias Explorer.Chain.{Address, Gas, Hash, Transaction}
+  alias Explorer.Chain.{Address, Gas, Hash, PendingBlockOperation, Transaction}
   alias Explorer.Chain.Block.{Reward, SecondDegreeRelation}
 
-  @required_attrs ~w(consensus difficulty gas_limit gas_used hash miner_hash nonce number parent_hash size timestamp
-                     total_difficulty)a
+  @optional_attrs ~w(size refetch_needed total_difficulty difficulty)a
+
+  @required_attrs ~w(consensus gas_limit gas_used hash miner_hash nonce number parent_hash timestamp)a
 
   @typedoc """
   How much work is required to find a hash with some number of leading 0s.  It is measured in hashes for PoW
@@ -60,7 +61,8 @@ defmodule Explorer.Chain.Block do
           size: non_neg_integer(),
           timestamp: DateTime.t(),
           total_difficulty: difficulty(),
-          transactions: %Ecto.Association.NotLoaded{} | [Transaction.t()]
+          transactions: %Ecto.Association.NotLoaded{} | [Transaction.t()],
+          refetch_needed: boolean()
         }
 
   @primary_key {:hash, Hash.Full, autogenerate: false}
@@ -74,6 +76,7 @@ defmodule Explorer.Chain.Block do
     field(:size, :integer)
     field(:timestamp, :utc_datetime_usec)
     field(:total_difficulty, :decimal)
+    field(:refetch_needed, :boolean)
 
     timestamps()
 
@@ -91,22 +94,44 @@ defmodule Explorer.Chain.Block do
     has_many(:transaction_forks, Transaction.Fork, foreign_key: :uncle_hash)
 
     has_many(:rewards, Reward, foreign_key: :block_hash)
+
+    has_one(:pending_operations, PendingBlockOperation, foreign_key: :block_hash)
   end
 
   def changeset(%__MODULE__{} = block, attrs) do
     block
-    |> cast(attrs, @required_attrs)
+    |> cast(attrs, @required_attrs ++ @optional_attrs)
     |> validate_required(@required_attrs)
     |> foreign_key_constraint(:parent_hash)
     |> unique_constraint(:hash, name: :blocks_pkey)
   end
 
-  def get_blocks_without_reward(query \\ __MODULE__) do
+  def number_only_changeset(%__MODULE__{} = block, attrs) do
+    block
+    |> cast(attrs, @required_attrs ++ @optional_attrs)
+    |> validate_required([:number])
+    |> foreign_key_constraint(:parent_hash)
+    |> unique_constraint(:hash, name: :blocks_pkey)
+  end
+
+  def blocks_without_reward_query do
+    consensus_blocks_query =
+      from(
+        b in __MODULE__,
+        where: b.consensus == true
+      )
+
+    validator_rewards =
+      from(
+        r in Reward,
+        where: r.address_type == ^"validator"
+      )
+
     from(
-      b in query,
-      left_join: r in Reward,
+      b in subquery(consensus_blocks_query),
+      left_join: r in subquery(validator_rewards),
       on: [block_hash: b.hash],
-      where: is_nil(r.block_hash) and b.consensus == true
+      where: is_nil(r.block_hash)
     )
   end
 

@@ -3,15 +3,85 @@ defmodule BlockScoutWeb.TransactionInternalTransactionController do
 
   import BlockScoutWeb.Chain, only: [paging_options: 1, next_page_params: 3, split_list_by_page: 1]
 
-  alias BlockScoutWeb.TransactionView
+  alias BlockScoutWeb.{AccessHelpers, InternalTransactionView, TransactionController}
   alias Explorer.{Chain, Market}
   alias Explorer.ExchangeRates.Token
+  alias Phoenix.View
 
-  def index(conn, %{"transaction_id" => hash_string} = params) do
-    with {:ok, hash} <- Chain.string_to_transaction_hash(hash_string),
+  def index(conn, %{"transaction_id" => transaction_hash_string, "type" => "JSON"} = params) do
+    with {:ok, transaction_hash} <- Chain.string_to_transaction_hash(transaction_hash_string),
+         :ok <- Chain.check_transaction_exists(transaction_hash),
+         {:ok, transaction} <- Chain.hash_to_transaction(transaction_hash, []),
+         {:ok, false} <- AccessHelpers.restricted_access?(to_string(transaction.from_address_hash), params),
+         {:ok, false} <- AccessHelpers.restricted_access?(to_string(transaction.to_address_hash), params) do
+      full_options =
+        Keyword.merge(
+          [
+            necessity_by_association: %{
+              [created_contract_address: :names] => :optional,
+              [from_address: :names] => :optional,
+              [to_address: :names] => :optional,
+              [transaction: :block] => :optional
+            }
+          ],
+          paging_options(params)
+        )
+
+      internal_transactions_plus_one = Chain.transaction_to_internal_transactions(transaction_hash, full_options)
+
+      {internal_transactions, next_page} = split_list_by_page(internal_transactions_plus_one)
+
+      next_page_path =
+        case next_page_params(next_page, internal_transactions, params) do
+          nil ->
+            nil
+
+          next_page_params ->
+            transaction_internal_transaction_path(
+              conn,
+              :index,
+              transaction_hash,
+              Map.delete(next_page_params, "type")
+            )
+        end
+
+      items =
+        internal_transactions
+        |> Enum.map(fn internal_transaction ->
+          View.render_to_string(
+            InternalTransactionView,
+            "_tile.html",
+            internal_transaction: internal_transaction
+          )
+        end)
+
+      json(
+        conn,
+        %{
+          items: items,
+          next_page_path: next_page_path
+        }
+      )
+    else
+      {:restricted_access, _} ->
+        TransactionController.set_not_found_view(conn, transaction_hash_string)
+
+      :error ->
+        TransactionController.set_invalid_view(conn, transaction_hash_string)
+
+      {:error, :not_found} ->
+        TransactionController.set_not_found_view(conn, transaction_hash_string)
+
+      :not_found ->
+        TransactionController.set_not_found_view(conn, transaction_hash_string)
+    end
+  end
+
+  def index(conn, %{"transaction_id" => transaction_hash_string} = params) do
+    with {:ok, transaction_hash} <- Chain.string_to_transaction_hash(transaction_hash_string),
          {:ok, transaction} <-
            Chain.hash_to_transaction(
-             hash,
+             transaction_hash,
              necessity_by_association: %{
                :block => :optional,
                [created_contract_address: :names] => :optional,
@@ -20,45 +90,27 @@ defmodule BlockScoutWeb.TransactionInternalTransactionController do
                [to_address: :smart_contract] => :optional,
                :token_transfers => :optional
              }
-           ) do
-      full_options =
-        Keyword.merge(
-          [
-            necessity_by_association: %{
-              [created_contract_address: :names] => :optional,
-              [from_address: :names] => :optional,
-              [to_address: :names] => :optional
-            }
-          ],
-          paging_options(params)
-        )
-
-      internal_transactions_plus_one = Chain.transaction_to_internal_transactions(transaction, full_options)
-
-      {internal_transactions, next_page} = split_list_by_page(internal_transactions_plus_one)
-
+           ),
+         {:ok, false} <- AccessHelpers.restricted_access?(to_string(transaction.from_address_hash), params),
+         {:ok, false} <- AccessHelpers.restricted_access?(to_string(transaction.to_address_hash), params) do
       render(
         conn,
         "index.html",
         exchange_rate: Market.get_exchange_rate(Explorer.coin()) || Token.null(),
-        internal_transactions: internal_transactions,
+        current_path: current_path(conn),
         block_height: Chain.block_height(),
-        show_token_transfers: Chain.transaction_has_token_transfers?(hash),
-        next_page_params: next_page_params(next_page, internal_transactions, params),
+        show_token_transfers: Chain.transaction_has_token_transfers?(transaction_hash),
         transaction: transaction
       )
     else
+      {:restricted_access, _} ->
+        TransactionController.set_not_found_view(conn, transaction_hash_string)
+
       :error ->
-        conn
-        |> put_status(422)
-        |> put_view(TransactionView)
-        |> render("invalid.html", transaction_hash: hash_string)
+        TransactionController.set_invalid_view(conn, transaction_hash_string)
 
       {:error, :not_found} ->
-        conn
-        |> put_status(404)
-        |> put_view(TransactionView)
-        |> render("not_found.html", transaction_hash: hash_string)
+        TransactionController.set_not_found_view(conn, transaction_hash_string)
     end
   end
 end

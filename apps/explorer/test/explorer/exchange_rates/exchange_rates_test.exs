@@ -19,6 +19,7 @@ defmodule Explorer.ExchangeRatesTest do
 
     Application.put_env(:explorer, Explorer.ExchangeRates.Source, source: TestSource)
     Application.put_env(:explorer, Explorer.ExchangeRates, table_name: :rates)
+    Application.put_env(:explorer, Explorer.ExchangeRates, enabled: true)
 
     on_exit(fn ->
       Application.put_env(:explorer, Explorer.ExchangeRates.Source, source_configuration)
@@ -68,6 +69,7 @@ defmodule Explorer.ExchangeRatesTest do
     test "with successful fetch" do
       expected_token = %Token{
         available_supply: Decimal.new("1000000.0"),
+        total_supply: Decimal.new("1000000.0"),
         btc_value: Decimal.new("1.000"),
         id: "test_id",
         last_updated: DateTime.utc_now(),
@@ -104,7 +106,10 @@ defmodule Explorer.ExchangeRatesTest do
 
       assert {:noreply, ^state} = ExchangeRates.handle_info({nil, {:error, "some error"}}, state)
 
-      assert_receive {_, {:ok, _}}
+      assert_receive :update
+
+      assert {:noreply, ^state} = ExchangeRates.handle_info(:update, state)
+      assert_receive {_, {:ok, [%Token{}]}}
     end
   end
 
@@ -133,5 +138,11 @@ defmodule Explorer.ExchangeRatesTest do
 
     assert z == ExchangeRates.lookup("z")
     assert nil == ExchangeRates.lookup("nope")
+  end
+
+  test "lookup when disabled" do
+    Application.put_env(:explorer, Explorer.ExchangeRates, enabled: false)
+
+    assert nil == ExchangeRates.lookup("z")
   end
 end

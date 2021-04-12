@@ -7,9 +7,8 @@ defmodule BlockScoutWeb.UserSocket do
   channel("exchange_rate:*", BlockScoutWeb.ExchangeRateChannel)
   channel("rewards:*", BlockScoutWeb.RewardChannel)
   channel("transactions:*", BlockScoutWeb.TransactionChannel)
-
-  transport(:websocket, Phoenix.Transports.WebSocket, timeout: 45_000)
-  # transport :longpoll, Phoenix.Transports.LongPoll
+  channel("tokens:*", BlockScoutWeb.TokenChannel)
+  channel("stakes:*", BlockScoutWeb.StakesChannel)
 
   def connect(%{"locale" => locale}, socket) do
     {:ok, assign(socket, :locale, locale)}

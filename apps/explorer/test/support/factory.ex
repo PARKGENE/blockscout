@@ -16,15 +16,22 @@ defmodule Explorer.Factory do
     Address.CurrentTokenBalance,
     Address.TokenBalance,
     Address.CoinBalance,
+    Address.CoinBalanceDaily,
     Block,
+    ContractMethod,
     Data,
+    DecompiledSmartContract,
     Hash,
     InternalTransaction,
     Log,
+    PendingBlockOperation,
     SmartContract,
     Token,
     TokenTransfer,
-    Transaction
+    Token.Instance,
+    Transaction,
+    StakingPool,
+    StakingPoolsDelegator
   }
 
   alias Explorer.Market.MarketHistory
@@ -50,6 +57,13 @@ defmodule Explorer.Factory do
     }
   end
 
+  def unfetched_balance_daily_factory do
+    %CoinBalanceDaily{
+      address_hash: address_hash(),
+      day: Timex.shift(Timex.now(), days: Enum.random(0..100) * -1)
+    }
+  end
+
   def update_balance_value(%CoinBalance{address_hash: address_hash, block_number: block_number}, value) do
     Repo.update_all(
       from(
@@ -65,6 +79,11 @@ defmodule Explorer.Factory do
     |> struct!(value: Enum.random(1..100_000))
   end
 
+  def fetched_balance_daily_factory do
+    unfetched_balance_daily_factory()
+    |> struct!(value: Enum.random(1..100_000))
+  end
+
   def contract_address_factory do
     %Address{
       hash: address_hash(),
@@ -76,6 +95,8 @@ defmodule Explorer.Factory do
     %{
       bytecode:
         "0x6080604052600436106049576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff16806360fe47b114604e5780636d4ce63c146078575b600080fd5b348015605957600080fd5b5060766004803603810190808035906020019092919050505060a0565b005b348015608357600080fd5b50608a60aa565b6040518082815260200191505060405180910390f35b8060008190555050565b600080549050905600a165627a7a72305820f65a3adc1cfb055013d1dc37d0fe98676e2a5963677fa7541a10386d163446680029",
+      tx_input:
+        "0x608060405234801561001057600080fd5b5060df8061001f6000396000f3006080604052600436106049576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff16806360fe47b114604e5780636d4ce63c146078575b600080fd5b348015605957600080fd5b5060766004803603810190808035906020019092919050505060a0565b005b348015608357600080fd5b50608a60aa565b6040518082815260200191505060405180910390f35b8060008190555050565b600080549050905600a165627a7a72305820853a985d0a4b20246785fc2f0357c202faa3db289980a48737180f358f9ddc3c0029",
       name: "SimpleStorage",
       source_code: """
       pragma solidity ^0.4.24;
@@ -123,7 +144,11 @@ defmodule Explorer.Factory do
       |> sequence(& &1)
       |> Hash.Address.cast()
 
-    address_hash
+    if to_string(address_hash) == "0x0000000000000000000000000000000000000000" do
+      address_hash()
+    else
+      address_hash
+    end
   end
 
   def block_factory do
@@ -139,7 +164,24 @@ defmodule Explorer.Factory do
       size: Enum.random(1..100_000),
       gas_limit: Enum.random(1..100_000),
       gas_used: Enum.random(1..100_000),
-      timestamp: DateTime.utc_now()
+      timestamp: DateTime.utc_now(),
+      refetch_needed: false
+    }
+  end
+
+  def contract_method_factory() do
+    %ContractMethod{
+      identifier: Base.decode16!("60fe47b1", case: :lower),
+      abi: %{
+        "constant" => false,
+        "inputs" => [%{"name" => "x", "type" => "uint256"}],
+        "name" => "set",
+        "outputs" => [],
+        "payable" => false,
+        "stateMutability" => "nonpayable",
+        "type" => "function"
+      },
+      type: "function"
     }
   end
 
@@ -159,7 +201,8 @@ defmodule Explorer.Factory do
   def block_second_degree_relation_factory do
     %Block.SecondDegreeRelation{
       uncle_hash: block_hash(),
-      nephew: build(:block)
+      nephew: build(:block),
+      index: 0
     }
   end
 
@@ -199,25 +242,20 @@ defmodule Explorer.Factory do
 
     cumulative_gas_used = collated_params[:cumulative_gas_used] || Enum.random(21_000..100_000)
     gas_used = collated_params[:gas_used] || Enum.random(21_000..100_000)
-    internal_transactions_indexed_at = collated_params[:internal_transactions_indexed_at]
     status = Keyword.get(collated_params, :status, Enum.random([:ok, :error]))
 
-    error =
-      if internal_transactions_indexed_at != nil && status == :error do
-        collated_params[:error] || "Something really bad happened"
-      else
-        nil
-      end
+    error = (status == :error && collated_params[:error]) || nil
 
     transaction
     |> Transaction.changeset(%{
       block_hash: block_hash,
       block_number: block_number,
       cumulative_gas_used: cumulative_gas_used,
+      from_address_hash: transaction.from_address_hash,
+      to_address_hash: transaction.to_address_hash,
       error: error,
       gas_used: gas_used,
       index: next_transaction_index,
-      internal_transactions_indexed_at: internal_transactions_indexed_at,
       status: status
     })
     |> Repo.update!()
@@ -263,6 +301,14 @@ defmodule Explorer.Factory do
     data
   end
 
+  def pending_block_operation_factory do
+    %PendingBlockOperation{
+      # caller MUST supply block
+      # all operations will default to false
+      fetch_internal_transactions: false
+    }
+  end
+
   def internal_transaction_factory() do
     gas = Enum.random(21_000..100_000)
     gas_used = Enum.random(0..gas)
@@ -279,6 +325,8 @@ defmodule Explorer.Factory do
       trace_address: [],
       # caller MUST supply `transaction` because it can't be built lazily to allow overrides without creating an extra
       # transaction
+      # caller MUST supply `block_hash` (usually the same as the transaction's)
+      # caller MUST supply `block_index`
       type: :call,
       value: sequence("internal_transaction_value", &Decimal.new(&1))
     }
@@ -301,6 +349,8 @@ defmodule Explorer.Factory do
       trace_address: [],
       # caller MUST supply `transaction` because it can't be built lazily to allow overrides without creating an extra
       # transaction
+      # caller MUST supply `block_hash` (usually the same as the transaction's)
+      # caller MUST supply `block_index`
       type: :create,
       value: sequence("internal_transaction_value", &Decimal.new(&1))
     }
@@ -318,8 +368,12 @@ defmodule Explorer.Factory do
   end
 
   def log_factory do
+    block = build(:block)
+
     %Log{
       address: build(:address),
+      block: block,
+      block_number: block.number,
       data: data(:log_data),
       first_topic: nil,
       fourth_topic: nil,
@@ -390,6 +444,7 @@ defmodule Explorer.Factory do
     insert(:token, contract_address: token_address)
 
     %TokenTransfer{
+      block: build(:block),
       amount: Decimal.new(1),
       block_number: block_number(),
       from_address: from_address,
@@ -459,6 +514,7 @@ defmodule Explorer.Factory do
 
     address = %Address{
       hash: address_hash(),
+      verified: true,
       contract_code: contract_code_info().bytecode,
       smart_contract: smart_contract
     }
@@ -492,11 +548,11 @@ defmodule Explorer.Factory do
     }
   end
 
-  def smart_contract_factory() do
+  def smart_contract_factory do
     contract_code_info = contract_code_info()
 
     %SmartContract{
-      address_hash: insert(:address).hash,
+      address_hash: insert(:address, contract_code: contract_code_info.bytecode, verified: true).hash,
       compiler_version: contract_code_info.version,
       name: contract_code_info.name,
       contract_source_code: contract_code_info.source_code,
@@ -505,7 +561,26 @@ defmodule Explorer.Factory do
     }
   end
 
-  def token_balance_factory() do
+  def decompiled_smart_contract_factory do
+    contract_code_info = contract_code_info()
+
+    %DecompiledSmartContract{
+      address_hash: insert(:address, contract_code: contract_code_info.bytecode, decompiled: true).hash,
+      decompiler_version: "test_decompiler",
+      decompiled_source_code: contract_code_info.source_code
+    }
+  end
+
+  def token_instance_factory do
+    %Instance{
+      token_contract_address_hash: build(:address),
+      token_id: 5,
+      metadata: %{key: "value"},
+      error: nil
+    }
+  end
+
+  def token_balance_factory do
     %TokenBalance{
       address: build(:address),
       token_contract_address_hash: insert(:token).contract_address_hash,
@@ -515,7 +590,7 @@ defmodule Explorer.Factory do
     }
   end
 
-  def address_current_token_balance_factory() do
+  def address_current_token_balance_factory do
     %CurrentTokenBalance{
       address: build(:address),
       token_contract_address_hash: insert(:token).contract_address_hash,
@@ -574,6 +649,38 @@ defmodule Explorer.Factory do
     %Administrator{
       role: "owner",
       user: build(:user)
+    }
+  end
+
+  def staking_pool_factory do
+    wei_per_ether = 1_000_000_000_000_000_000
+
+    %StakingPool{
+      staking_address_hash: address_hash(),
+      mining_address_hash: address_hash(),
+      banned_until: 0,
+      delegators_count: 0,
+      is_active: true,
+      is_banned: false,
+      is_validator: true,
+      total_staked_amount: wei_per_ether * 500,
+      self_staked_amount: wei_per_ether * 500,
+      was_banned_count: 0,
+      was_validator_count: 1
+    }
+  end
+
+  def staking_pools_delegator_factory do
+    wei_per_ether = 1_000_000_000_000_000_000
+
+    %StakingPoolsDelegator{
+      staking_address_hash: address_hash(),
+      address_hash: address_hash(),
+      max_ordered_withdraw_allowed: wei_per_ether * 100,
+      max_withdraw_allowed: wei_per_ether * 50,
+      ordered_withdraw: wei_per_ether * 600,
+      stake_amount: wei_per_ether * 200,
+      ordered_withdraw_epoch: 2
     }
   end
 end

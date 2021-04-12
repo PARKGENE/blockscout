@@ -81,7 +81,7 @@ defmodule EthereumJSONRPC.WebSocket.WebSocketClientTest do
   describe "reconnect" do
     setup do
       dispatch = :cowboy_router.compile([{:_, [{"/websocket", EthereumJSONRPC.WebSocket.Cowboy.WebSocketHandler, []}]}])
-      {:ok, _} = :cowboy.start_http(EthereumJSONRPC.WebSocket.Cowboy, 100, [], env: [dispatch: dispatch])
+      {:ok, _} = :cowboy.start_tls(EthereumJSONRPC.WebSocket.Cowboy, [], env: [dispatch: dispatch])
 
       on_exit(fn ->
         :ranch.stop_listener(EthereumJSONRPC.WebSocket.Cowboy)
@@ -89,7 +89,7 @@ defmodule EthereumJSONRPC.WebSocket.WebSocketClientTest do
 
       port = :ranch.get_port(EthereumJSONRPC.WebSocket.Cowboy)
 
-      pid = start_supervised!({WebSocketClient, ["ws://localhost:#{port}/websocket", []]})
+      pid = start_supervised!({WebSocketClient, ["ws://localhost:#{port}/websocket", [keepalive: :timer.hours(1)], []]})
 
       %{pid: pid, port: port}
     end

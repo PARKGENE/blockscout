@@ -1,10 +1,11 @@
 defmodule BlockScoutWeb.AddressChannelTest do
   use BlockScoutWeb.ChannelCase,
-    # ETS tables are shared in `Explorer.Counters.AddressesWithBalanceCounter`
+    # ETS tables are shared in `Explorer.Counters.AddressesCounter`
     async: false
 
+  alias BlockScoutWeb.UserSocket
   alias BlockScoutWeb.Notifier
-  alias Explorer.Counters.AddressesWithBalanceCounter
+  alias Explorer.Counters.AddressesCounter
 
   test "subscribed user is notified of new_address count event" do
     topic = "addresses:new_address"
@@ -12,12 +13,35 @@ defmodule BlockScoutWeb.AddressChannelTest do
 
     address = insert(:address)
 
-    start_supervised!(AddressesWithBalanceCounter)
-    AddressesWithBalanceCounter.consolidate()
+    start_supervised!(AddressesCounter)
+    AddressesCounter.consolidate()
 
     Notifier.handle_event({:chain_event, :addresses, :realtime, [address]})
 
     assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "count", payload: %{count: _}}, :timer.seconds(5)
+  end
+
+  describe "user pushing to channel" do
+    setup do
+      address = insert(:address, fetched_coin_balance: 100_000, fetched_coin_balance_block_number: 1)
+      topic = "addresses:#{address.hash}"
+
+      {:ok, _, socket} =
+        UserSocket
+        |> socket("no_id", %{locale: "en"})
+        |> subscribe_and_join(topic)
+
+      {:ok, %{address: address, topic: topic, socket: socket}}
+    end
+
+    test "can retrieve current balance card of the address", %{socket: socket, address: address} do
+      ref = push(socket, "get_balance", %{})
+
+      assert_reply(ref, :ok, %{balance: sent_balance, balance_card: balance_card})
+
+      assert sent_balance == address.fetched_coin_balance.value
+      # assert balance_card =~ "/address/#{address.hash}/token-balances"
+    end
   end
 
   describe "user subscribed to address" do
@@ -31,8 +55,8 @@ defmodule BlockScoutWeb.AddressChannelTest do
     test "notified of balance_update for matching address", %{address: address, topic: topic} do
       address_with_balance = %{address | fetched_coin_balance: 1}
 
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       Notifier.handle_event({:chain_event, :addresses, :realtime, [address_with_balance]})
 
@@ -43,8 +67,8 @@ defmodule BlockScoutWeb.AddressChannelTest do
     end
 
     test "not notified of balance_update if fetched_coin_balance is nil", %{address: address} do
-      start_supervised!(AddressesWithBalanceCounter)
-      AddressesWithBalanceCounter.consolidate()
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       Notifier.handle_event({:chain_event, :addresses, :realtime, [address]})
 
@@ -110,7 +134,15 @@ defmodule BlockScoutWeb.AddressChannelTest do
         |> insert(from_address: address)
         |> with_block()
 
-      internal_transaction = insert(:internal_transaction, transaction: transaction, from_address: address, index: 0)
+      internal_transaction =
+        insert(
+          :internal_transaction,
+          transaction: transaction,
+          from_address: address,
+          index: 0,
+          block_hash: transaction.block_hash,
+          block_index: 0
+        )
 
       Notifier.handle_event({:chain_event, :internal_transactions, :realtime, [internal_transaction]})
 
@@ -134,7 +166,14 @@ defmodule BlockScoutWeb.AddressChannelTest do
         |> insert(to_address: address)
         |> with_block()
 
-      internal_transaction = insert(:internal_transaction, transaction: transaction, to_address: address, index: 0)
+      internal_transaction =
+        insert(:internal_transaction,
+          transaction: transaction,
+          to_address: address,
+          index: 0,
+          block_hash: transaction.block_hash,
+          block_index: 0
+        )
 
       Notifier.handle_event({:chain_event, :internal_transactions, :realtime, [internal_transaction]})
 
@@ -162,7 +201,14 @@ defmodule BlockScoutWeb.AddressChannelTest do
         |> with_block()
 
       internal_transaction =
-        insert(:internal_transaction, transaction: transaction, from_address: address, to_address: address, index: 0)
+        insert(:internal_transaction,
+          transaction: transaction,
+          from_address: address,
+          to_address: address,
+          index: 0,
+          block_hash: transaction.block_hash,
+          block_index: 0
+        )
 
       Notifier.handle_event({:chain_event, :internal_transactions, :realtime, [internal_transaction]})
 

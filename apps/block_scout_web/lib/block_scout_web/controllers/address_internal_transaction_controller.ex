@@ -5,17 +5,18 @@ defmodule BlockScoutWeb.AddressInternalTransactionController do
 
   use BlockScoutWeb, :controller
 
-  import BlockScoutWeb.AddressController, only: [transaction_count: 1, validation_count: 1]
   import BlockScoutWeb.Chain, only: [current_filter: 1, paging_options: 1, next_page_params: 3, split_list_by_page: 1]
 
-  alias BlockScoutWeb.InternalTransactionView
+  alias BlockScoutWeb.{AccessHelpers, InternalTransactionView}
   alias Explorer.{Chain, Market}
   alias Explorer.ExchangeRates.Token
+  alias Indexer.Fetcher.CoinBalanceOnDemand
   alias Phoenix.View
 
   def index(conn, %{"address_id" => address_hash_string, "type" => "JSON"} = params) do
     with {:ok, address_hash} <- Chain.string_to_address_hash(address_hash_string),
-         {:ok, address} <- Chain.hash_to_address(address_hash) do
+         {:ok, address} <- Chain.hash_to_address(address_hash, [], false),
+         {:ok, false} <- AccessHelpers.restricted_access?(address_hash_string, params) do
       full_options =
         [
           necessity_by_association: %{
@@ -27,7 +28,7 @@ defmodule BlockScoutWeb.AddressInternalTransactionController do
         |> Keyword.merge(paging_options(params))
         |> Keyword.merge(current_filter(params))
 
-      internal_transactions_plus_one = Chain.address_to_internal_transactions(address, full_options)
+      internal_transactions_plus_one = Chain.address_to_internal_transactions(address_hash, full_options)
       {internal_transactions, next_page} = split_list_by_page(internal_transactions_plus_one)
 
       next_page_path =
@@ -51,6 +52,9 @@ defmodule BlockScoutWeb.AddressInternalTransactionController do
 
       json(conn, %{items: internal_transactions_json, next_page_path: next_page_path})
     else
+      {:restricted_access, _} ->
+        not_found(conn)
+
       :error ->
         not_found(conn)
 
@@ -61,18 +65,22 @@ defmodule BlockScoutWeb.AddressInternalTransactionController do
 
   def index(conn, %{"address_id" => address_hash_string} = params) do
     with {:ok, address_hash} <- Chain.string_to_address_hash(address_hash_string),
-         {:ok, address} <- Chain.hash_to_address(address_hash) do
+         {:ok, address} <- Chain.hash_to_address(address_hash),
+         {:ok, false} <- AccessHelpers.restricted_access?(address_hash_string, params) do
       render(
         conn,
         "index.html",
         address: address,
+        coin_balance_status: CoinBalanceOnDemand.trigger_fetch(address),
         current_path: current_path(conn),
         exchange_rate: Market.get_exchange_rate(Explorer.coin()) || Token.null(),
         filter: params["filter"],
-        transaction_count: transaction_count(address),
-        validation_count: validation_count(address)
+        counters_path: address_path(conn, :address_counters, %{"id" => address_hash_string})
       )
     else
+      {:restricted_access, _} ->
+        not_found(conn)
+
       :error ->
         not_found(conn)
 

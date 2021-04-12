@@ -2,7 +2,7 @@ defmodule Explorer.ExchangeRates do
   @moduledoc """
   Local cache for token exchange rates.
 
-  Exchange rate data is updated every 5 minutes.
+  Exchange rate data is updated every 10 minutes.
   """
 
   use GenServer
@@ -12,7 +12,7 @@ defmodule Explorer.ExchangeRates do
   alias Explorer.Chain.Events.Publisher
   alias Explorer.ExchangeRates.{Source, Token}
 
-  @interval :timer.minutes(5)
+  @interval :timer.minutes(10)
   @table_name :exchange_rates
 
   @impl GenServer
@@ -42,7 +42,7 @@ defmodule Explorer.ExchangeRates do
   def handle_info({_ref, {:error, reason}}, state) do
     Logger.warn(fn -> "Failed to get exchange rates with reason '#{reason}'." end)
 
-    fetch_rates()
+    schedule_next_consolidation()
 
     {:noreply, state}
   end
@@ -77,6 +77,10 @@ defmodule Explorer.ExchangeRates do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  defp schedule_next_consolidation do
+    Process.send_after(self(), :update, :timer.minutes(1))
+  end
+
   @doc """
   Lists exchange rates for the tracked tickers.
   """
@@ -90,7 +94,7 @@ defmodule Explorer.ExchangeRates do
   """
   @spec lookup(String.t()) :: Token.t() | nil
   def lookup(symbol) do
-    if store() == :ets do
+    if store() == :ets && enabled?() do
       case :ets.lookup(table_name(), symbol) do
         [tuple | _] when is_tuple(tuple) -> Token.from_tuple(tuple)
         _ -> nil
@@ -132,5 +136,9 @@ defmodule Explorer.ExchangeRates do
 
   defp store do
     config(:store) || :ets
+  end
+
+  defp enabled? do
+    Application.get_env(:explorer, __MODULE__, [])[:enabled] == true
   end
 end

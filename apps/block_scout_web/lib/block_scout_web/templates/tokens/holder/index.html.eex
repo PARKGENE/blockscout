@@ -3,20 +3,20 @@
     OverviewView,
     "_details.html",
     token: @token,
-    total_token_transfers: @total_token_transfers,
-    total_token_holders: @total_token_holders,
+    counters_path: @counters_path,
     conn: @conn
   ) %>
 
   <section>
     <div class="card">
-      <div class="card-header">
-        <%= render OverviewView, "_tabs.html", assigns %>
-      </div>
-
+      <%= render OverviewView, "_tabs.html", assigns %>
       <!-- Token Holders -->
       <div class="card-body" data-async-load data-async-listing="<%= @current_path %>">
-        <h2 class="card-title"><%= gettext "Token Holders" %></h2>
+        <h2 class="card-title list-title-description"><%= gettext "Token Holders" %></h2>
+
+        <div class="list-top-pagination-container-wrapper">
+          <%= render BlockScoutWeb.CommonComponentsView, "_pagination_container.html", position: "top", cur_page_number: "1", show_pagination_limit: true, data_next_page_button: true, data_prev_page_button: true %>
+        </div>
 
         <button data-error-message class="alert alert-danger col-12 text-left" style="display: none;">
           <span href="#" class="alert-link"><%= gettext("Something went wrong, click to reload.") %></span>
@@ -28,25 +28,15 @@
             </span>
           </div>
         </div>
-        <div data-loading-message class="tile tile-muted text-center mt-3">
-          <span class="loading-spinner-small mr-2">
-            <span class="loading-spinner-block-1"></span>
-            <span class="loading-spinner-block-2"></span>
-          </span>
-          <%= gettext("Loading") %>...
+
+        <div data-items>
+          <%= render BlockScoutWeb.CommonComponentsView, "_tile-loader.html" %>
         </div>
-        <div data-items></div>
-        <a href="#" class="button button-secondary button-small float-right mt-4" data-next-page-button style="display: none;">
-          <%= gettext("Next Page") %>
-        </a>
-        <div class="button button-secondary button-small float-right mt-4" data-loading-button style="display: none;">
-          <span class="loading-spinner-small mr-2">
-            <span class="loading-spinner-block-1"></span>
-            <span class="loading-spinner-block-2"></span>
-          </span>
-          <%= gettext("Loading") %>...
-        </div>
+
+        <%= render BlockScoutWeb.CommonComponentsView, "_pagination_container.html", position: "bottom", cur_page_number: "1", show_pagination_limit: true, data_next_page_button: true, data_prev_page_button: true %>
+
       </div>
     </div>
   </section>
+  <script defer data-cfasync="false" src="<%= static_path(@conn, "/js/token-counters.js") %>"></script>
 </section>

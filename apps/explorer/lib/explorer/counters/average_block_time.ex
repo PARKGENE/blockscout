@@ -5,7 +5,7 @@ defmodule Explorer.Counters.AverageBlockTime do
   Caches the number of token holders of a token.
   """
 
-  import Ecto.Query, only: [from: 2]
+  import Ecto.Query, only: [from: 2, where: 2]
 
   alias Explorer.Chain.Block
   alias Explorer.Repo
@@ -19,62 +19,77 @@ defmodule Explorer.Counters.AverageBlockTime do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
   end
 
-  def average_block_time(block \\ nil) do
+  def average_block_time do
     enabled? =
       :explorer
       |> Application.fetch_env!(__MODULE__)
       |> Keyword.fetch!(:enabled)
 
     if enabled? do
-      block = if block, do: {block.number, DateTime.to_unix(block.timestamp, :millisecond)}
-      GenServer.call(__MODULE__, {:average_block_time, block})
+      GenServer.call(__MODULE__, :average_block_time)
     else
       {:error, :disabled}
     end
   end
 
+  def refresh do
+    GenServer.call(__MODULE__, :refresh_timestamps)
+  end
+
   ## Server
   @impl true
   def init(_) do
-    timestamps_query =
+    refresh_period = average_block_cache_period()
+    Process.send_after(self(), :refresh_timestamps, refresh_period)
+
+    {:ok, refresh_timestamps()}
+  end
+
+  @impl true
+  def handle_call(:average_block_time, _from, %{average: average} = state), do: {:reply, average, state}
+
+  @impl true
+  def handle_call(:refresh_timestamps, _, _) do
+    {:reply, :ok, refresh_timestamps()}
+  end
+
+  @impl true
+  def handle_info(:refresh_timestamps, _) do
+    refresh_period = Application.get_env(:explorer, __MODULE__)[:period]
+    Process.send_after(self(), :refresh_timestamps, refresh_period)
+
+    {:noreply, refresh_timestamps()}
+  end
+
+  defp refresh_timestamps do
+    base_query =
       from(block in Block,
         limit: 100,
-        offset: 1,
+        offset: 100,
         order_by: [desc: block.number],
         select: {block.number, block.timestamp}
       )
 
-    timestamps =
+    timestamps_query =
+      if Application.get_env(:explorer, :include_uncles_in_average_block_time) do
+        base_query
+      else
+        base_query
+        |> where(consensus: true)
+      end
+
+    timestamps_row =
       timestamps_query
       |> Repo.all()
+
+    timestamps =
+      timestamps_row
+      |> Enum.sort_by(fn {_, timestamp} -> timestamp end, &>=/2)
       |> Enum.map(fn {number, timestamp} ->
         {number, DateTime.to_unix(timestamp, :millisecond)}
       end)
 
-    {:ok, %{timestamps: timestamps, average: average_distance(timestamps)}}
-  end
-
-  @impl true
-  def handle_call({:average_block_time, nil}, _from, %{average: average} = state), do: {:reply, average, state}
-
-  def handle_call({:average_block_time, block}, _from, state) do
-    state = add_block(state, block)
-    {:reply, state.average, state}
-  end
-
-  # This is pretty naive, but we'll only ever be sorting 100 dates so I don't think
-  # complex logic is really necessary here.
-  defp add_block(%{timestamps: timestamps} = state, {new_number, _} = block) do
-    if Enum.any?(timestamps, fn {number, _} -> number == new_number end) do
-      state
-    else
-      timestamps =
-        [block | timestamps]
-        |> Enum.sort_by(fn {number, _} -> number end, &Kernel.>/2)
-        |> Enum.take(100)
-
-      %{state | timestamps: timestamps, average: average_distance(timestamps)}
-    end
+    %{timestamps: timestamps, average: average_distance(timestamps)}
   end
 
   defp average_distance([]), do: Duration.from_milliseconds(0)
@@ -88,7 +103,7 @@ defmodule Explorer.Counters.AverageBlockTime do
         {sum + duration, count + 1}
       end)
 
-    average = sum / count
+    average = if count == 0, do: 0, else: sum / count
 
     average
     |> round()
@@ -97,14 +112,27 @@ defmodule Explorer.Counters.AverageBlockTime do
 
   defp durations(timestamps) do
     timestamps
-    |> Enum.reduce({[], nil}, fn {_, timestamp}, {durations, last_timestamp} ->
+    |> Enum.reduce({[], nil, nil}, fn {block_number, timestamp}, {durations, last_block_number, last_timestamp} ->
       if last_timestamp do
-        duration = last_timestamp - timestamp
-        {[duration | durations], timestamp}
+        block_numbers_range = last_block_number - block_number
+
+        if block_numbers_range == 0 do
+          {durations, block_number, timestamp}
+        else
+          duration = (last_timestamp - timestamp) / block_numbers_range
+          {[duration | durations], block_number, timestamp}
+        end
       else
-        {durations, timestamp}
+        {durations, block_number, timestamp}
       end
     end)
     |> elem(0)
+  end
+
+  defp average_block_cache_period do
+    case Integer.parse(System.get_env("AVERAGE_BLOCK_CACHE_PERIOD", "")) do
+      {secs, ""} -> :timer.seconds(secs)
+      _ -> :timer.minutes(30)
+    end
   end
 end

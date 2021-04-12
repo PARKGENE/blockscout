@@ -1,8 +1,6 @@
 import $ from 'jquery'
-import humps from 'humps'
 import numeral from 'numeral'
 import { BigNumber } from 'bignumber.js'
-import socket from '../socket'
 
 export function formatUsdValue (value) {
   return `${formatCurrencyValue(value)} USD`
@@ -18,6 +16,7 @@ function formatCurrencyValue (value, symbol) {
   if (value < 0.000001) return `${window.localized['Less than']} ${symbol}0.000001`
   if (value < 1) return `${symbol}${numeral(value).format('0.000000')}`
   if (value < 100000) return `${symbol}${numeral(value).format('0,0.00')}`
+  if (value > 1000000000000) return `${symbol}${numeral(value).format('0.000e+0')}`
   return `${symbol}${numeral(value).format('0,0')}`
 }
 
@@ -44,6 +43,7 @@ export function formatAllUsdValues (root) {
 formatAllUsdValues()
 
 function tryUpdateCalculatedUsdValues (el, usdExchangeRate = el.dataset.usdExchangeRate) {
+  // eslint-disable-next-line no-prototype-builtins
   if (!el.dataset.hasOwnProperty('weiValue')) return
   const ether = weiToEther(el.dataset.weiValue)
   const usd = etherToUSD(ether, usdExchangeRate)
@@ -61,7 +61,3 @@ export function updateAllCalculatedUsdValues (usdExchangeRate) {
   $('[data-usd-unit-price]').each((i, el) => tryUpdateUnitPriceValues(el, usdExchangeRate))
 }
 updateAllCalculatedUsdValues()
-
-export const exchangeRateChannel = socket.channel(`exchange_rate:new_rate`)
-exchangeRateChannel.join()
-exchangeRateChannel.on('new_rate', (msg) => updateAllCalculatedUsdValues(humps.camelizeKeys(msg).exchangeRate.usdValue))

@@ -8,7 +8,7 @@ defmodule Explorer.Chain.Import.Runner.Tokens do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.{Multi, Repo}
-  alias Explorer.Chain.{Import, Token}
+  alias Explorer.Chain.{Hash, Import, Token}
 
   @behaviour Import.Runner
 
@@ -16,6 +16,67 @@ defmodule Explorer.Chain.Import.Runner.Tokens do
   @timeout 60_000
 
   @type imported :: [Token.t()]
+
+  @type token_holder_count_delta :: %{contract_address_hash: Hash.Address.t(), delta: neg_integer() | pos_integer()}
+  @type holder_count :: non_neg_integer()
+  @type token_holder_count :: %{contract_address_hash: Hash.Address.t(), count: holder_count()}
+
+  def acquire_contract_address_tokens(repo, contract_address_hashes) do
+    token_query =
+      from(
+        token in Token,
+        where: token.contract_address_hash in ^contract_address_hashes,
+        # Enforce Token ShareLocks order (see docs: sharelocks.md)
+        order_by: token.contract_address_hash,
+        lock: "FOR UPDATE"
+      )
+
+    tokens = repo.all(token_query)
+
+    {:ok, tokens}
+  end
+
+  def update_holder_counts_with_deltas(repo, token_holder_count_deltas, %{
+        timeout: timeout,
+        timestamps: %{updated_at: updated_at}
+      }) do
+    # NOTE that acquire_contract_address_tokens needs to be called before this
+    {hashes, deltas} =
+      token_holder_count_deltas
+      |> Enum.map(fn %{contract_address_hash: contract_address_hash, delta: delta} ->
+        {:ok, contract_address_hash_bytes} = Hash.Address.dump(contract_address_hash)
+        {contract_address_hash_bytes, delta}
+      end)
+      |> Enum.unzip()
+
+    query =
+      from(
+        token in Token,
+        join:
+          deltas in fragment(
+            "(SELECT unnest(?::bytea[]) as contract_address_hash, unnest(?::bigint[]) as delta)",
+            ^hashes,
+            ^deltas
+          ),
+        on: token.contract_address_hash == deltas.contract_address_hash,
+        where: not is_nil(token.holder_count),
+        # ShareLocks order already enforced by `acquire_contract_address_tokens` (see docs: sharelocks.md)
+        update: [
+          set: [
+            holder_count: token.holder_count + deltas.delta,
+            updated_at: ^updated_at
+          ]
+        ],
+        select: %{
+          contract_address_hash: token.contract_address_hash,
+          holder_count: token.holder_count
+        }
+      )
+
+    {_total, result} = repo.update_all(query, [], timeout: timeout)
+
+    {:ok, result}
+  end
 
   @impl Import.Runner
   def ecto_schema_module, do: Token
@@ -55,8 +116,13 @@ defmodule Explorer.Chain.Import.Runner.Tokens do
         }) :: {:ok, [Token.t()]}
   def insert(repo, changes_list, %{timeout: timeout, timestamps: timestamps} = options) when is_list(changes_list) do
     on_conflict = Map.get_lazy(options, :on_conflict, &default_on_conflict/0)
-    # order so that row ShareLocks are grabbed in a consistent order
-    ordered_changes_list = Enum.sort_by(changes_list, & &1.contract_address_hash)
+
+    ordered_changes_list =
+      changes_list
+      # brand new tokens start with no holders
+      |> Stream.map(&Map.put_new(&1, :holder_count, 0))
+      # Enforce Token ShareLocks order (see docs: sharelocks.md)
+      |> Enum.sort_by(& &1.contract_address_hash)
 
     {:ok, _} =
       Import.insert_changes_list(
@@ -82,6 +148,8 @@ defmodule Explorer.Chain.Import.Runner.Tokens do
           decimals: fragment("EXCLUDED.decimals"),
           type: fragment("EXCLUDED.type"),
           cataloged: fragment("EXCLUDED.cataloged"),
+          # `holder_count` is not updated as a pre-existing token means the `holder_count` is already initialized OR
+          #   need to be migrated with `priv/repo/migrations/scripts/update_new_tokens_holder_count_in_batches.sql.exs`
           # Don't update `contract_address_hash` as it is the primary key and used for the conflict target
           inserted_at: fragment("LEAST(?, EXCLUDED.inserted_at)", token.inserted_at),
           updated_at: fragment("GREATEST(?, EXCLUDED.updated_at)", token.updated_at)

@@ -6,8 +6,7 @@ defmodule BlockScoutWeb.Endpoint do
     plug(Phoenix.Ecto.SQL.Sandbox, repo: Explorer.Repo)
   end
 
-  socket("/socket", BlockScoutWeb.UserSocket)
-  socket("/wobserver", Wobserver.Web.PhoenixSocket)
+  socket("/socket", BlockScoutWeb.UserSocket, websocket: [timeout: 45_000])
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -27,14 +26,11 @@ defmodule BlockScoutWeb.Endpoint do
       android-chrome-512x512.png
       apple-touch-icon.png
       browserconfig.xml
-      favicon.ico
-      favicon-16x16.png
-      favicon-32x32.png
       mstile-150x150.png
       safari-pinned-tab.svg
-      site.manifest
       robots.txt
-    )
+    ),
+    only_matching: ~w(manifest)
   )
 
   # Code reloading can be explicitly enabled under the
@@ -51,6 +47,8 @@ defmodule BlockScoutWeb.Endpoint do
   plug(
     Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
+    length: 20_000_000,
+    query_string_length: 1_000_000,
     pass: ["*/*"],
     json_decoder: Poison
   )

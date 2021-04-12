@@ -49,26 +49,38 @@ defmodule BlockScoutWeb.Tokens.InventoryControllerTest do
         |> with_block()
 
       second_page_token_balances =
-        Enum.map(
-          1..50,
-          &insert(
+        Enum.map(1..50, fn i ->
+          insert(
             :token_transfer,
             transaction: transaction,
             token_contract_address: token.contract_address,
             token: token,
-            token_id: &1 + 1000
+            token_id: i + 1000
           )
-        )
+
+          insert(
+            :token_instance,
+            token_contract_address_hash: token.contract_address.hash,
+            token_id: i + 1000
+          )
+        end)
 
       conn =
         get(conn, token_inventory_path(conn, :index, token.contract_address_hash), %{
-          "token_id" => "999"
+          "token_id" => "999",
+          "type" => "JSON"
         })
 
-      assert Enum.map(conn.assigns.unique_tokens, & &1.token_id) == Enum.map(second_page_token_balances, & &1.token_id)
+      conn = get(conn, token_inventory_path(conn, :index, token.contract_address_hash), %{type: "JSON"})
+
+      {:ok, %{"items" => items}} =
+        conn.resp_body
+        |> Poison.decode()
+
+      assert Enum.count(items) == Enum.count(second_page_token_balances)
     end
 
-    test "next_page_params exists if not on last page", %{conn: conn} do
+    test "next_page_path exists if not on last page", %{conn: conn} do
       token = insert(:token, type: "ERC-721")
 
       transaction =
@@ -76,28 +88,32 @@ defmodule BlockScoutWeb.Tokens.InventoryControllerTest do
         |> insert()
         |> with_block()
 
-      Enum.each(
-        1..51,
-        &insert(
+      Enum.each(1..51, fn i ->
+        insert(
           :token_transfer,
           transaction: transaction,
           token_contract_address: token.contract_address,
           token: token,
-          token_id: &1 + 1000
+          token_id: i + 1000
         )
-      )
 
-      expected_next_page_params = %{
-        "token_id" => to_string(token.contract_address_hash),
-        "unique_token" => 1050
-      }
+        insert(
+          :token_instance,
+          token_contract_address_hash: token.contract_address.hash,
+          token_id: i + 1000
+        )
+      end)
 
-      conn = get(conn, token_inventory_path(conn, :index, token.contract_address_hash))
+      conn = get(conn, token_inventory_path(conn, :index, token.contract_address_hash), %{type: "JSON"})
 
-      assert conn.assigns.next_page_params == expected_next_page_params
+      {:ok, %{"next_page_path" => next_page_path}} =
+        conn.resp_body
+        |> Poison.decode()
+
+      assert next_page_path
     end
 
-    test "next_page_params are empty if on last page", %{conn: conn} do
+    test "next_page_path is empty if on last page", %{conn: conn} do
       token = insert(:token, type: "ERC-721")
 
       transaction =
@@ -113,9 +129,13 @@ defmodule BlockScoutWeb.Tokens.InventoryControllerTest do
         token_id: 1000
       )
 
-      conn = get(conn, token_inventory_path(conn, :index, token.contract_address_hash))
+      conn = get(conn, token_inventory_path(conn, :index, token.contract_address_hash), %{type: "JSON"})
 
-      refute conn.assigns.next_page_params
+      {:ok, %{"next_page_path" => next_page_path}} =
+        conn.resp_body
+        |> Poison.decode()
+
+      refute next_page_path
     end
   end
 end

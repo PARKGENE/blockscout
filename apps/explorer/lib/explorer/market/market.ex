@@ -3,12 +3,11 @@ defmodule Explorer.Market do
   Context for data related to the cryptocurrency market.
   """
 
-  import Ecto.Query
-
   alias Explorer.Chain.Address.CurrentTokenBalance
-  alias Explorer.Chain.Hash
+  alias Explorer.Chain.{BridgedToken, Hash}
+  alias Explorer.Chain.Supply.TokenBridge
   alias Explorer.ExchangeRates.Token
-  alias Explorer.Market.MarketHistory
+  alias Explorer.Market.{MarketHistory, MarketHistoryCache}
   alias Explorer.{ExchangeRates, KnownTokens, Repo}
 
   @doc """
@@ -35,23 +34,22 @@ defmodule Explorer.Market do
 
   Today's date is include as part of the day count
   """
-  @spec fetch_recent_history(non_neg_integer()) :: [MarketHistory.t()]
-  def fetch_recent_history(days) when days >= 1 do
-    day_diff = days * -1
-
-    query =
-      from(
-        mh in MarketHistory,
-        where: mh.date > date_add(^Date.utc_today(), ^day_diff, "day"),
-        order_by: [desc: mh.date]
-      )
-
-    Repo.all(query)
+  @spec fetch_recent_history() :: [MarketHistory.t()]
+  def fetch_recent_history do
+    MarketHistoryCache.fetch()
   end
 
   @doc false
   def bulk_insert_history(records) do
-    Repo.insert_all(MarketHistory, records, on_conflict: :replace_all, conflict_target: [:date])
+    records_without_zeroes =
+      records
+      |> Enum.reject(fn item ->
+        Decimal.equal?(item.closing_price, 0) && Decimal.equal?(item.opening_price, 0)
+      end)
+      # Enforce MarketHistory ShareLocks order (see docs: sharelocks.md)
+      |> Enum.sort_by(& &1.date)
+
+    Repo.insert_all(MarketHistory, records_without_zeroes, on_conflict: :nothing, conflict_target: [:date])
   end
 
   def add_price(%{symbol: symbol} = token) do
@@ -59,7 +57,20 @@ defmodule Explorer.Market do
 
     matches_known_address = known_address && known_address == token.contract_address_hash
 
-    usd_value = fetch_token_usd_value(matches_known_address, symbol)
+    usd_value =
+      cond do
+        matches_known_address ->
+          fetch_token_usd_value(matches_known_address, symbol)
+
+        bridged_token = mainnet_bridged_token?(token) ->
+          TokenBridge.get_current_price_for_bridged_token(
+            token.contract_address_hash,
+            bridged_token.foreign_token_contract_address_hash
+          )
+
+        true ->
+          nil
+      end
 
     Map.put(token, :usd_value, usd_value)
   end
@@ -72,6 +83,26 @@ defmodule Explorer.Market do
 
   def add_price(tokens) when is_list(tokens) do
     Enum.map(tokens, &add_price/1)
+  end
+
+  defp mainnet_bridged_token?(token) do
+    bridged_prop = Map.get(token, :bridged) || nil
+
+    if bridged_prop do
+      bridged_token = Repo.get_by(BridgedToken, home_token_contract_address_hash: token.contract_address_hash)
+
+      if bridged_token do
+        if bridged_token.foreign_chain_id do
+          if Decimal.cmp(bridged_token.foreign_chain_id, Decimal.new(1)) == :eq, do: bridged_token, else: false
+        else
+          false
+        end
+      else
+        false
+      end
+    else
+      false
+    end
   end
 
   defp fetch_token_usd_value(true, symbol) do

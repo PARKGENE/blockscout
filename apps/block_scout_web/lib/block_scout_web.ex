@@ -16,6 +16,7 @@ defmodule BlockScoutWeb do
   below. Instead, define any helper function in modules
   and import those modules here.
   """
+  def version(), do: Application.get_env(:block_scout_web, :version)
 
   def controller do
     quote do
@@ -23,6 +24,7 @@ defmodule BlockScoutWeb do
 
       import BlockScoutWeb.Controller
       import BlockScoutWeb.Router.Helpers
+      import BlockScoutWeb.WebRouter.Helpers, except: [static_path: 2]
       import BlockScoutWeb.Gettext
       import BlockScoutWeb.ErrorHelpers
       import Plug.Conn
@@ -53,6 +55,10 @@ defmodule BlockScoutWeb do
         Views.ScriptHelpers,
         WeiHelpers
       }
+
+      import BlockScoutWeb.WebRouter.Helpers, except: [static_path: 2]
+
+      import PhoenixFormAwesomplete
     end
   end
 

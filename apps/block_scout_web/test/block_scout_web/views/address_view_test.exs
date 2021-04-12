@@ -11,14 +11,16 @@ defmodule BlockScoutWeb.AddressViewTest do
     end
 
     test "for a pending internal transaction contract creation to address" do
-      transaction = insert(:transaction, to_address: nil)
+      transaction = insert(:transaction, to_address: nil) |> with_block()
 
       internal_transaction =
         insert(:internal_transaction,
           index: 1,
           transaction: transaction,
           to_address: nil,
-          created_contract_address_hash: nil
+          created_contract_address_hash: nil,
+          block_hash: transaction.block_hash,
+          block_index: 1
         )
 
       assert "Contract Address Pending" == AddressView.address_partial_selector(internal_transaction, :to, nil)
@@ -32,7 +34,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_link.html",
                address: ^to_address,
                contract: false,
-               truncate: true
+               truncate: true,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, nil, true)
     end
 
@@ -44,7 +47,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_link.html",
                address: ^to_address,
                contract: false,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, nil)
     end
 
@@ -56,7 +60,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_link.html",
                address: ^to_address,
                contract: false,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, nil)
     end
 
@@ -68,7 +73,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_responsive_hash.html",
                address: ^to_address,
                contract: false,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, transaction.to_address)
     end
 
@@ -81,7 +87,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_link.html",
                address: ^contract_address,
                contract: true,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, transaction.to_address)
     end
 
@@ -94,7 +101,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_responsive_hash.html",
                address: ^contract_address,
                contract: true,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, contract_address)
     end
 
@@ -106,7 +114,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_link.html",
                address: ^to_address,
                contract: false,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :to, nil)
     end
 
@@ -118,7 +127,8 @@ defmodule BlockScoutWeb.AddressViewTest do
                partial: "_responsive_hash.html",
                address: ^from_address,
                contract: false,
-               truncate: false
+               truncate: false,
+               use_custom_tooltip: false
              ] = AddressView.address_partial_selector(transaction, :from, transaction.from_address)
     end
   end
@@ -133,9 +143,37 @@ defmodule BlockScoutWeb.AddressViewTest do
     end
   end
 
+  describe "balance_percentage_enabled/1" do
+    test "with non_zero market cap" do
+      Application.put_env(:block_scout_web, :show_percentage, true)
+
+      assert AddressView.balance_percentage_enabled?(100_500) == true
+    end
+
+    test "with zero market cap" do
+      Application.put_env(:block_scout_web, :show_percentage, true)
+
+      assert AddressView.balance_percentage_enabled?(0) == false
+    end
+
+    test "with switched off show_percentage" do
+      Application.put_env(:block_scout_web, :show_percentage, false)
+
+      assert AddressView.balance_percentage_enabled?(100_501) == false
+    end
+  end
+
   test "balance_percentage/1" do
+    Application.put_env(:explorer, :supply, Explorer.Chain.Supply.ProofOfAuthority)
     address = insert(:address, fetched_coin_balance: 2_524_608_000_000_000_000_000_000)
+
     assert "1.0000% Market Cap" = AddressView.balance_percentage(address)
+  end
+
+  test "balance_percentage with nil total_supply" do
+    address = insert(:address, fetched_coin_balance: 2_524_608_000_000_000_000_000_000)
+
+    assert "" = AddressView.balance_percentage(address, nil)
   end
 
   describe "contract?/1" do
@@ -191,7 +229,7 @@ defmodule BlockScoutWeb.AddressViewTest do
   describe "qr_code/1" do
     test "it returns an encoded value" do
       address = build(:address)
-      assert {:ok, _} = Base.decode64(AddressView.qr_code(address))
+      assert {:ok, _} = Base.decode64(AddressView.qr_code(address.hash))
     end
   end
 
@@ -263,11 +301,12 @@ defmodule BlockScoutWeb.AddressViewTest do
   end
 
   describe "token_title/1" do
-    test "returns the 6 first chars of address hash when token has no name" do
+    test "returns the 6 first and 6 last chars of address hash when token has no name" do
       token = insert(:token, name: nil)
 
-      expected_hash = to_string(token.contract_address_hash)
-      assert String.starts_with?(expected_hash, AddressView.token_title(token))
+      hash = to_string(token.contract_address_hash)
+      expected_hash = String.slice(hash, 0, 8) <> "-" <> String.slice(hash, -6, 6)
+      assert expected_hash == AddressView.token_title(token)
     end
 
     test "returns name(symbol) when token has name" do
@@ -334,19 +373,19 @@ defmodule BlockScoutWeb.AddressViewTest do
       smart_contract = build(:smart_contract, name: "POA")
       address = build(:address, smart_contract: smart_contract)
 
-      assert AddressView.address_page_title(address) == "POA (#{address.hash})"
+      assert AddressView.address_page_title(address) == "POA (#{address})"
     end
 
     test "uses the string 'Contract' when it's a contract" do
       address = build(:contract_address, smart_contract: nil)
 
-      assert AddressView.address_page_title(address) == "Contract #{address.hash}"
+      assert AddressView.address_page_title(address) == "Contract #{address}"
     end
 
     test "uses the address hash when it is not a contract" do
       address = build(:address, smart_contract: nil)
 
-      assert AddressView.address_page_title(address) == "#{address.hash}"
+      assert AddressView.address_page_title(address) == "#{address}"
     end
   end
 end

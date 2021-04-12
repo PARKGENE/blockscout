@@ -1,16 +1,20 @@
 defmodule BlockScoutWeb.ChainControllerTest do
   use BlockScoutWeb.ConnCase,
-    # ETS table is shared in `Explorer.Counters.AddressesWithBalanceCounter`
+    # ETS table is shared in `Explorer.Counters.AddressesCounter`
     async: false
 
-  import BlockScoutWeb.Router.Helpers, only: [chain_path: 2, block_path: 3, transaction_path: 3, address_path: 3]
+  import BlockScoutWeb.WebRouter.Helpers, only: [chain_path: 2, block_path: 3, transaction_path: 3, address_path: 3]
 
   alias Explorer.Chain.Block
-  alias Explorer.Counters.AddressesWithBalanceCounter
+  alias Explorer.Counters.AddressesCounter
 
   setup do
-    start_supervised!(AddressesWithBalanceCounter)
-    AddressesWithBalanceCounter.consolidate()
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Uncles.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Uncles.child_id())
+    start_supervised!(AddressesCounter)
+    AddressesCounter.consolidate()
 
     :ok
   end
@@ -28,7 +32,7 @@ defmodule BlockScoutWeb.ChainControllerTest do
       conn =
         build_conn()
         |> put_req_header("x-requested-with", "xmlhttprequest")
-        |> get("/chain_blocks")
+        |> get("/chain-blocks")
 
       response = json_response(conn, 200)
 
@@ -42,7 +46,7 @@ defmodule BlockScoutWeb.ChainControllerTest do
       conn =
         build_conn()
         |> put_req_header("x-requested-with", "xmlhttprequest")
-        |> get("/chain_blocks")
+        |> get("/chain-blocks")
 
       response = json_response(conn, 200)
 
@@ -58,7 +62,7 @@ defmodule BlockScoutWeb.ChainControllerTest do
       conn =
         build_conn()
         |> put_req_header("x-requested-with", "xmlhttprequest")
-        |> get("/chain_blocks")
+        |> get("/chain-blocks")
 
       response = List.first(json_response(conn, 200)["blocks"])
 
@@ -66,7 +70,67 @@ defmodule BlockScoutWeb.ChainControllerTest do
     end
   end
 
-  describe "GET q/2" do
+  describe "GET token_autocomplete/2" do
+    test "finds matching tokens" do
+      insert(:token, name: "MaGiC")
+      insert(:token, name: "Evil")
+
+      conn =
+        build_conn()
+        |> get("/token-autocomplete?q=magic")
+
+      assert Enum.count(json_response(conn, 200)) == 1
+    end
+
+    test "finds two matching tokens" do
+      insert(:token, name: "MaGiC")
+      insert(:token, name: "magic")
+
+      conn =
+        build_conn()
+        |> get("/token-autocomplete?q=magic")
+
+      assert Enum.count(json_response(conn, 200)) == 2
+    end
+
+    test "finds verified contract" do
+      insert(:smart_contract, name: "SuperToken")
+
+      conn =
+        build_conn()
+        |> get("/token-autocomplete?q=sup")
+
+      assert Enum.count(json_response(conn, 200)) == 1
+    end
+
+    test "finds verified contract and token" do
+      insert(:smart_contract, name: "MagicContract")
+      insert(:token, name: "magicToken")
+
+      conn =
+        build_conn()
+        |> get("/token-autocomplete?q=mag")
+
+      assert Enum.count(json_response(conn, 200)) == 2
+    end
+
+    test "finds verified contracts and tokens" do
+      insert(:smart_contract, name: "something")
+      insert(:smart_contract, name: "MagicContract")
+      insert(:token, name: "Magic3")
+      insert(:smart_contract, name: "magicContract2")
+      insert(:token, name: "magicToken")
+      insert(:token, name: "OneMoreToken")
+
+      conn =
+        build_conn()
+        |> get("/token-autocomplete?q=mag")
+
+      assert Enum.count(json_response(conn, 200)) == 4
+    end
+  end
+
+  describe "GET search/2" do
     test "finds a consensus block by block number", %{conn: conn} do
       insert(:block, number: 37)
       conn = get(conn, "/search?q=37")
@@ -101,6 +165,19 @@ defmodule BlockScoutWeb.ChainControllerTest do
       assert redirected_to(conn) == transaction_path(conn, :show, transaction)
     end
 
+    test "finds a transaction by hash when there are not 0x prefix", %{conn: conn} do
+      transaction =
+        :transaction
+        |> insert()
+        |> with_block()
+
+      "0x" <> non_prefix_hash = to_string(transaction.hash)
+
+      conn = get(conn, "search?q=#{to_string(non_prefix_hash)}")
+
+      assert redirected_to(conn) == transaction_path(conn, :show, transaction)
+    end
+
     test "finds an address by hash", %{conn: conn} do
       address = insert(:address)
       conn = get(conn, "search?q=#{to_string(address.hash)}")
@@ -111,6 +188,15 @@ defmodule BlockScoutWeb.ChainControllerTest do
     test "finds an address by hash when there are extra spaces", %{conn: conn} do
       address = insert(:address)
       conn = get(conn, "search?q=#{to_string(address.hash)}")
+
+      assert redirected_to(conn) == address_path(conn, :show, address)
+    end
+
+    test "finds an address by hash when there are not 0x prefix", %{conn: conn} do
+      address = insert(:address)
+      "0x" <> non_prefix_hash = to_string(address.hash)
+
+      conn = get(conn, "search?q=#{to_string(non_prefix_hash)}")
 
       assert redirected_to(conn) == address_path(conn, :show, address)
     end

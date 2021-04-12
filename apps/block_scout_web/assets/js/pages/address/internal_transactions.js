@@ -1,11 +1,13 @@
 import $ from 'jquery'
-import _ from 'lodash'
+import omit from 'lodash/omit'
 import humps from 'humps'
 import numeral from 'numeral'
 import socket from '../../socket'
 import { batchChannel } from '../../lib/utils'
 import { connectElements } from '../../lib/redux_helpers.js'
 import { createAsyncLoadStore } from '../../lib/async_listing_load'
+import '../address'
+import { isFiltered } from './utils'
 
 const BATCH_THRESHOLD = 10
 
@@ -20,7 +22,7 @@ export function reducer (state, action) {
   switch (action.type) {
     case 'PAGE_LOAD':
     case 'ELEMENTS_LOAD': {
-      return Object.assign({}, state, _.omit(action, 'type'))
+      return Object.assign({}, state, omit(action, 'type'))
     }
     case 'CHANNEL_DISCONNECTED': {
       if (state.beyondPageOne) return state
@@ -34,7 +36,7 @@ export function reducer (state, action) {
       if (state.channelDisconnected || state.beyondPageOne) return state
 
       const incomingInternalTransactions = action.msgs
-        .filter(({toAddressHash, fromAddressHash}) => (
+        .filter(({ toAddressHash, fromAddressHash }) => (
           !state.filter ||
           (state.filter === 'to' && toAddressHash === state.addressHash) ||
           (state.filter === 'from' && fromAddressHash === state.addressHash)
@@ -68,11 +70,26 @@ const elements = {
     }
   },
   '[data-selector="channel-batching-count"]': {
-    render ($el, state, oldState) {
+    render ($el, state) {
       const $channelBatching = $('[data-selector="channel-batching-message"]')
       if (!state.internalTransactionsBatch.length) return $channelBatching.hide()
       $channelBatching.show()
       $el[0].innerHTML = numeral(state.internalTransactionsBatch.length).format()
+    }
+  },
+  '[data-test="filter_dropdown"]': {
+    render ($el, state) {
+      if (state.emptyResponse && !state.isSearch) {
+        if (isFiltered(state.filter)) {
+          $el.addClass('no-rm')
+        } else {
+          return $el.hide()
+        }
+      } else {
+        $el.removeClass('no-rm')
+      }
+
+      return $el.show()
     }
   }
 }
@@ -81,7 +98,7 @@ if ($('[data-page="address-internal-transactions"]').length) {
   const store = createAsyncLoadStore(reducer, initialState, 'dataset.key')
   const addressHash = $('[data-page="address-details"]')[0].dataset.pageAddressHash
 
-  store.dispatch({type: 'PAGE_LOAD', addressHash})
+  store.dispatch({ type: 'PAGE_LOAD', addressHash })
   connectElements({ store, elements })
 
   const addressChannel = socket.channel(`addresses:${addressHash}`, {})

@@ -81,7 +81,11 @@ defmodule Explorer.KnownTokens do
   """
   @spec list :: [{String.t(), Hash.Address.t()}]
   def list do
-    list_from_store(store())
+    if enabled?() do
+      list_from_store(store())
+    else
+      []
+    end
   end
 
   @doc """
@@ -89,12 +93,20 @@ defmodule Explorer.KnownTokens do
   """
   @spec lookup(String.t()) :: {:ok, Hash.Address.t()} | :error | nil
   def lookup(symbol) do
-    if store() == :ets do
-      case :ets.lookup(table_name(), symbol) do
-        [{_symbol, address} | _] -> Hash.Address.cast(address)
-        _ -> nil
+    if store() == :ets && enabled?() do
+      if ets_table_exists?(table_name()) do
+        case :ets.lookup(table_name(), symbol) do
+          [{_symbol, address} | _] -> Hash.Address.cast(address)
+          _ -> nil
+        end
+      else
+        nil
       end
     end
+  end
+
+  defp ets_table_exists?(table) do
+    :ets.whereis(table) !== :undefined
   end
 
   @doc false
@@ -127,5 +139,9 @@ defmodule Explorer.KnownTokens do
 
   defp store do
     config(:store) || :ets
+  end
+
+  defp enabled? do
+    Application.get_env(:explorer, __MODULE__, [])[:enabled] == true
   end
 end
